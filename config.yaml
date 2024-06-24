@@ -1,0 +1,6 @@
+model: 'lstm'
+batch_size: 32
+epochs: 100
+lr: 1e-3
+max_length: 20
+min_words: 100
