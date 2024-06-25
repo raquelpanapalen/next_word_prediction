@@ -1,13 +1,6 @@
 from pathlib import Path
 import configargparse
 
-from transformers import (
-    Trainer,
-    TrainingArguments,
-    AutoTokenizer,
-    BertGenerationTokenizer,
-    BertTokenizer,
-)
 from datasets import load_dataset
 
 import torchtext
@@ -15,21 +8,30 @@ import torchmetrics
 
 torchtext.disable_torchtext_deprecation_warning()
 
-from torch.utils.data import DataLoader
-from dataset.dataset import TextDataset
-
-from tqdm import tqdm
+from dataset.dataset import LoaderConstructor
 
 import wandb
-
-import math
 import torch
 import torch.nn as nn
 import torch.optim as optim
+
 from models.lstm import LSTM
+from models.xlstm import xLSTM
+from models.transformer import Transformer
+
+from trainer import Trainer
+from scheduler import ChainedScheduler
 
 
 def get_args():
+    def str2bool(v):
+        if isinstance(v, bool):
+            return v
+        if v.lower() in ("yes", "true", "t", "y", "1"):
+            return True
+        elif v.lower() in ("no", "false", "f", "n", "0"):
+            return False
+
     config_path = Path(__file__).parent / "config.yaml"
     parser = configargparse.ArgumentParser(
         default_config_files=[config_path],
@@ -43,48 +45,35 @@ def get_args():
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--max_length", type=int, default=20)
+    parser.add_argument("--embed-dim", type=int, default=512)
     parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--min_words", type=int, default=200)
+    parser.add_argument("--wandb", type=str2bool, default=False)
+    parser.add_argument("--chained-scheduler", type=str2bool, default=False)
     return parser.parse_args()
 
 
-class LoaderConstructor:
-    def __init__(self, dataset, batch_size, max_length, min_words):
-        self.dataset = dataset
-        self.batch_size = batch_size
-        self.max_length = max_length
-        self.min_words = min_words
-
-        # Load the tokenizer
-        self.tokenizer = BertTokenizer.from_pretrained(
-            "google-bert/bert-large-uncased", padding_side="left"
+def get_model(model, vocab_size, embed_dim, seq_len):
+    if model == "lstm":
+        return LSTM(
+            vocab_size=vocab_size,
+            embedding_dim=embed_dim,
+            hidden_dim=512,
+            num_layers=2,
         )
-        self.vocab_size = self.tokenizer.vocab_size
-
-    def construct_loader(self, split):
-
-        def remove_non_alpha(text):
-            return "".join([c if c.isalpha() else " " for c in text])
-
-        # Tokenize the dataset
-        dataset = [
-            remove_non_alpha(sample["text"])
-            for sample in self.dataset[split]
-            if len(sample["text"]) > self.min_words
-        ]
-        encodings = self.tokenizer(
-            dataset,
-            truncation=True,
-            padding="max_length",
-            max_length=self.max_length + 1,
-            add_special_tokens=False,
-            return_tensors="pt",
+    elif model == "transformer":
+        return Transformer(
+            vocab_size=vocab_size,
+            seq_len=seq_len,
+            embed_dim=embed_dim,
+            num_layers=2,
+            num_heads=8,
+            dropout=0.1,
         )
-        dataset = TextDataset(encodings=encodings, vocab_size=self.vocab_size)
-        loader = DataLoader(
-            dataset, batch_size=self.batch_size, shuffle=True, drop_last=True
-        )
-        return loader
+    elif model == "xlstm":
+        return xLSTM(vocab_size=vocab_size, embed_dim=embed_dim)
+    else:
+        raise ValueError(f"Model {model} not found")
 
 
 if __name__ == "__main__":
@@ -94,7 +83,14 @@ if __name__ == "__main__":
     dataset = load_dataset(cfg.dataset, "wikitext-103-raw-v1")
 
     # Construct the dataloaders
-    lc = LoaderConstructor(dataset, cfg.batch_size, cfg.max_length, cfg.min_words)
+    labels_sequence = True if cfg.model == "transformer" else False
+    lc = LoaderConstructor(
+        dataset=dataset,
+        batch_size=cfg.batch_size,
+        max_length=cfg.max_length,
+        min_words=cfg.min_words,
+        labels_sequence=labels_sequence,
+    )
     loaders = {}
     for loader in ["train", "validation", "test"]:
         loaders[loader] = lc.construct_loader(split=loader)
@@ -104,25 +100,11 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Initialize the model
-    model = LSTM(
-        vocab_size=vocab_size,
-        embedding_dim=input_size,
-        hidden_dim=512,
-        num_layers=1,
-    )
-    model.to(device)
+    model = get_model(cfg.model, vocab_size, cfg.embed_dim, input_size)
 
     # Init wandb logger
-    wandb.init(project="text-generation", config=cfg)
-
-    def metrics_to_wandb(split, loss, accuracy, loader_len, epoch=None):
-        wandb.log(
-            {
-                f"{split}/loss": loss / loader_len,
-                f"{split}/accuracy": accuracy,
-            },
-            step=epoch,
-        )
+    if cfg.wandb:
+        wandb.init(project="text-generation", config=cfg)
 
     # Initialize the optimizer, loss function, and accuracy metric
     optimizer = optim.Adam(model.parameters(), lr=cfg.lr)
@@ -131,90 +113,64 @@ if __name__ == "__main__":
         task="multiclass", num_classes=vocab_size, top_k=5
     ).to(device)
 
-    verbose = False
+    trainer = Trainer(
+        model=model,
+        optimizer=optimizer,
+        criterion=criterion,
+        accuracy=accuracy,
+        batch_size=cfg.batch_size,
+        vocab_size=vocab_size,
+        wandb=cfg.wandb,
+        device=device,
+    )
+
+    scheduler = None
+    if cfg.chained_scheduler:
+        warmup_steps = 10
+        scheduler = ChainedScheduler(
+            trainer.optimizer,
+            T_0=(cfg.epochs - warmup_steps),
+            T_mul=1,
+            eta_min=1e-5,
+            gamma=0.5,
+            max_lr=cfg.lr,
+            warmup_steps=warmup_steps,
+        )
 
     # Train the model
     best_valid_loss = float("inf")
     for epoch in range(cfg.epochs):
-        train_loss = 0
-        accuracy.reset()
+        if cfg.wandb:
+            lr = trainer.optimizer.param_groups[0]["lr"]
+            wandb.log({"Learning Rate": lr}, step=epoch)
+
+        # Training
         model.train()
-        hidden = model.init_hidden(cfg.batch_size, device)
-        for batch in tqdm(loaders["train"], total=len(loaders["train"])):
-            # Forward pass
-            optimizer.zero_grad()
-            inputs, labels = batch["input_ids"].to(device), batch["labels"].to(device)
-            hidden = model.detach_hidden(hidden)
-            output, hidden = model(inputs, hidden)
-
-            # Compute accuracy and loss
-            accuracy.update(output[:, -1, :], labels)
-            loss = criterion(output[:, -1, :], labels)
-
-            # Backpropagation
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.item()
-
-        metrics_to_wandb(
-            "train", train_loss, accuracy.compute(), len(loaders["train"]), epoch
-        )
-        print(
-            f"[TRAIN {epoch}/{cfg.epochs}]: Loss: {train_loss / len(loaders['train'])}, Accuracy: {accuracy.compute()}"
-        )
+        trainer.train_validate_epoch(loaders["train"], epoch, "train")
 
         # Validation
-        val_loss = 0
-        accuracy.reset()
         model.eval()
-        hidden = model.init_hidden(cfg.batch_size, device)
         with torch.no_grad():
-            for batch in tqdm(loaders["validation"], total=len(loaders["validation"])):
-                inputs, labels = batch["input_ids"].to(device), batch["labels"].to(
-                    device
-                )
-                hidden = model.detach_hidden(hidden)
-                output, hidden = model(inputs, hidden)
-                accuracy.update(output[:, -1, :], labels)
-                loss = criterion(output[:, -1, :], labels)
-                val_loss += loss.item()
-
-        metrics_to_wandb(
-            "validation",
-            val_loss,
-            accuracy.compute(),
-            len(loaders["validation"]),
-            epoch,
-        )
-        print(
-            f"[VALID {epoch}/{cfg.epochs}]: Loss: {val_loss / len(loaders['validation'])}, Accuracy: {accuracy.compute()}"
-        )
+            val_loss = trainer.train_validate_epoch(
+                loaders["validation"], epoch, "validation"
+            )
 
         # Save the best model
         if val_loss < best_valid_loss:
             best_valid_loss = val_loss
-            torch.save(model.state_dict(), "best_model.pt")
+            torch.save(model.state_dict(), f"{cfg.model}_best.pt")
             print(f"Model improved, saving model")
 
+        if scheduler:
+            scheduler.step()
+
     # Load the best model
-    model.load_state_dict(torch.load("best_model.pt"))
+    model.load_state_dict(torch.load(f"{cfg.model}_best.pt"))
 
     # Test the model
-    test_loss = 0
-    accuracy.reset()
     model.eval()
     with torch.no_grad():
-        for batch in tqdm(loaders["test"], total=len(loaders["test"])):
-            inputs, labels = batch["input_ids"].to(device), batch["labels"].to(device)
-            hidden = model.detach_hidden(hidden)
-            output, hidden = model(inputs, hidden)
-            loss = criterion(output[:, -1, :], labels)
-            accuracy.update(output[:, -1, :], labels)
-            test_loss += loss.item()
-    metrics_to_wandb("test", test_loss, accuracy.compute(), len(loaders["test"]))
-    print(
-        f"[TEST]: Loss: {test_loss / len(loaders['test'])}, Accuracy: {accuracy.compute()}"
-    )
+        trainer.train_validate_epoch(loaders["test"], epoch, "test")
 
     # Predict next word
     texts = [
@@ -232,12 +188,11 @@ if __name__ == "__main__":
         )
         inputs = tokens["input_ids"].to(device)
 
-        hidden = model.init_hidden(batch_size=1, device=device)
         predictions = []
         for i in range(n_next_words):
-            output, hidden = model(inputs, hidden)
+            output = model(inputs)
             next_token = torch.argmax(output[:, -1, :])
-            next_word_prediction = lc.tokenizer.decode(next_token)
+            next_word_prediction = str(lc.tokenizer.decode(next_token))
             predictions.append(next_word_prediction)
             inputs = torch.cat([inputs[:, 1:], next_token.reshape(1, -1)], dim=1)
 

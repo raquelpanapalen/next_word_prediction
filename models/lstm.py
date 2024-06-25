@@ -31,14 +31,15 @@ class LSTM(nn.Module):
 
         # self.init_weights()
 
-    def forward(self, x, hidden):
+    def forward(self, x):
         embedding = self.dropout(self.embedding(x))
-        output, hidden = self.lstm(embedding, hidden)
-        output = self.dropout(output)
-        output = self.fc(output)
-        return output, hidden
+        output, _ = self.lstm(embedding)
+        output = self.fc(
+            self.dropout(output[:, -1, :])
+        )  # we take the last hidden state
+        return output
 
-    def init_weights(self):
+    """def init_weights(self):
         init_range_emb = 0.1
         init_range_other = 1 / math.sqrt(self.hidden_dim)
         self.embedding.weight.data.uniform_(-init_range_emb, init_range_emb)
@@ -61,4 +62,4 @@ class LSTM(nn.Module):
         hidden, cell = hidden
         hidden = hidden.detach()
         cell = cell.detach()
-        return hidden, cell
+        return hidden, cell"""

@@ -3,10 +3,11 @@ from torch.utils.data import Dataset, DataLoader
 
 
 class TextDataset(Dataset):
-    def __init__(self, encodings, vocab_size):
+    def __init__(self, encodings, vocab_size, labels_sequence):
         self.encodings = encodings
         self.vocab_size = vocab_size
         self.input_size = len(encodings["input_ids"][0]) - 1
+        self.labels_sequence = labels_sequence
 
     def __len__(self):
         return len(self.encodings["input_ids"])
@@ -15,17 +16,20 @@ class TextDataset(Dataset):
         sample = self.encodings["input_ids"][idx]
         item = {
             "input_ids": sample[:-1],
-            "labels": sample[-1],
+            "labels": sample[1:] if self.labels_sequence else sample[-1],
         }
         return item
 
 
 class LoaderConstructor:
-    def __init__(self, dataset, batch_size, max_length, min_words):
+    def __init__(
+        self, dataset, batch_size, max_length, min_words, labels_sequence=False
+    ):
         self.dataset = dataset
         self.batch_size = batch_size
         self.max_length = max_length
         self.min_words = min_words
+        self.labels_sequence = labels_sequence
 
         # Load the tokenizer
         self.tokenizer = BertTokenizer.from_pretrained(
@@ -52,7 +56,11 @@ class LoaderConstructor:
             add_special_tokens=False,
             return_tensors="pt",
         )
-        dataset = TextDataset(encodings=encodings, vocab_size=self.vocab_size)
+        dataset = TextDataset(
+            encodings=encodings,
+            vocab_size=self.vocab_size,
+            labels_sequence=self.labels_sequence,
+        )
         loader = DataLoader(
             dataset, batch_size=self.batch_size, shuffle=True, drop_last=True
         )

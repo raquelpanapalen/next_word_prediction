@@ -1,6 +1,9 @@
 model: 'lstm'
 batch_size: 32
-epochs: 100
-lr: 1e-3
+embed-dim: 512
+epochs: 50
+lr: 1e-4
 max_length: 20
 min_words: 100
+wandb: True
+chained-scheduler: True
