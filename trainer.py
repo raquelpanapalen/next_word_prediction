@@ -10,7 +10,7 @@ class Trainer:
         criterion,
         accuracy,
         batch_size,
-        vocab_size,
+        output_dim,
         wandb,
         device,
     ):
@@ -19,7 +19,7 @@ class Trainer:
         self.criterion = criterion
         self.accuracy = accuracy
         self.batch_size = batch_size
-        self.vocab_size = vocab_size
+        self.output_dim = output_dim
         self.wandb = wandb
         self.device = device
 
@@ -44,7 +44,7 @@ class Trainer:
                 self.device
             )
             labels = labels.contiguous().view(-1)
-            output = self.model(inputs).view(-1, self.vocab_size)
+            output = self.model(inputs).view(-1, self.output_dim)
 
             # Compute accuracy and loss
             self.accuracy.update(output, labels)

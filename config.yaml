@@ -1,8 +1,8 @@
-model: 'lstm'
+model: 'xlstm'
 batch_size: 32
 embed-dim: 512
-epochs: 50
-lr: 1e-4
+epochs: 40
+lr: 1e-5
 max_length: 20
 min_words: 100
 wandb: True

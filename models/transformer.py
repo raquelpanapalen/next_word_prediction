@@ -42,6 +42,7 @@ class Transformer(nn.Module):
         vocab_size,
         seq_len,
         embed_dim,
+        output_dim,
         num_layers,
         num_heads,
         dropout=0.1,
@@ -56,7 +57,7 @@ class Transformer(nn.Module):
             decoder_layer=self.decoder_layer,
             num_layers=num_layers,
         )
-        self.linear = nn.Linear(embed_dim, vocab_size)
+        self.linear = nn.Linear(embed_dim, output_dim)
         self.dropout = nn.Dropout(dropout)
 
     def generate_square_subsequent_mask(self, sz):
