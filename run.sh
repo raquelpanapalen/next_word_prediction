@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Define datasets
-datasets=("wikitext-2 alicewonderland rocstories")
+datasets=("wikitext-2" "alicewonderland" "rocstories")
 
 # Define learning rates
-lrs=("1e-4 5e-5")
+lrs=("1e-4" "5e-5")
 
 # Loop over datasets and learning rates
 for dataset in "${datasets[@]}"; do

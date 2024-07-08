@@ -41,9 +41,7 @@ def get_args():
     )
 
     parser.add_argument("--model", type=str, default="xlstm")
-    parser.add_argument(
-        "--dataset", type=str, default="wikitext-2"
-    )  # ptb_text_only, wikitext-2-v1, wikitext-103-v1
+    parser.add_argument("--dataset", type=str, default="wikitext-2")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--max_length", type=int, default=20)
@@ -91,7 +89,7 @@ if __name__ == "__main__":
     cfg = get_args()
 
     # Load the dataset
-    if "wikitest" in cfg.dataset:
+    if "wikitext" in cfg.dataset:
         dataset = load_dataset("wikitext", f"{cfg.dataset}-raw-v1")
         for split in dataset.keys():
             dataset[split] = dataset[split].filter(
