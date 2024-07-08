@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import configargparse
 
@@ -9,6 +10,7 @@ import torchmetrics
 torchtext.disable_torchtext_deprecation_warning()
 
 from dataset.dataset import LoaderConstructor
+from dataset.dataset import create_rocstories_dataset, create_alicewonderland_dataset
 
 import wandb
 import torch
@@ -42,12 +44,12 @@ def get_args():
     parser.add_argument(
         "--dataset", type=str, default="wikitext-2"
     )  # ptb_text_only, wikitext-2-v1, wikitext-103-v1
-    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--max_length", type=int, default=20)
     parser.add_argument("--embed-dim", type=int, default=512)
     parser.add_argument("--lr", type=float, default=5e-5)
-    parser.add_argument("--min_words", type=int, default=200)
+    parser.add_argument("--min-text-length", type=int, default=200)
     parser.add_argument("--wandb", type=str2bool, default=False)
     parser.add_argument("--chained-scheduler", type=str2bool, default=False)
     parser.add_argument("--tokenizer", type=str, default="torchtext")
@@ -89,15 +91,24 @@ if __name__ == "__main__":
     cfg = get_args()
 
     # Load the dataset
-    dataset = load_dataset("wikitext", f"{cfg.dataset}-raw-v1")
+    if "wikitest" in cfg.dataset:
+        dataset = load_dataset("wikitext", f"{cfg.dataset}-raw-v1")
+        for split in dataset.keys():
+            dataset[split] = dataset[split].filter(
+                lambda x: len(x["text"]) > cfg.min_text_length
+            )
+
+    elif cfg.dataset == "rocstories":
+        dataset = create_rocstories_dataset(os.getcwd())
+    elif cfg.dataset == "alicewonderland":
+        dataset = create_alicewonderland_dataset(os.getcwd())
 
     # Construct the dataloaders
-    labels_sequence = True if cfg.model in ["transformer", "xlstm"] else False
+    labels_sequence = False
     lc = LoaderConstructor(
         dataset=dataset,
         batch_size=cfg.batch_size,
         max_length=cfg.max_length,
-        min_words=cfg.min_words,
         tokenizer_type=cfg.tokenizer,
         labels_sequence=labels_sequence,
     )
@@ -122,7 +133,11 @@ if __name__ == "__main__":
 
     # Init wandb logger
     if cfg.wandb:
-        wandb.init(project="text-generation", config=cfg)
+        wandb.init(
+            project="text-generation",
+            config=cfg,
+            name=f"{cfg.model}_{cfg.dataset}_lr={cfg.lr}",
+        )
 
     # Initialize the optimizer, loss function, and accuracy metric
     optimizer = optim.Adam(model.parameters(), lr=cfg.lr)
@@ -156,6 +171,8 @@ if __name__ == "__main__":
         )
 
     # Train the model
+    model_filename = f"trained_models/{cfg.model}_{cfg.dataset}_lr={str(cfg.lr).replace('.', '_')}_best.pt"
+
     best_valid_loss = float("inf")
     for epoch in range(cfg.epochs):
         if cfg.wandb:
@@ -176,45 +193,18 @@ if __name__ == "__main__":
         # Save the best model
         if val_loss < best_valid_loss:
             best_valid_loss = val_loss
-            torch.save(model.state_dict(), f"{cfg.model}_best.pt")
+            torch.save(model.state_dict(), model_filename)
             print(f"Model improved, saving model")
 
         if scheduler:
             scheduler.step()
 
+    torch.save(model.state_dict(), model_filename.replace("best", "lastepoch"))
+
     # Load the best model
-    model.load_state_dict(
-        torch.load(f"{cfg.model}_best_{best_valid_loss}_{cfg.dataset}.pt")
-    )
+    model.load_state_dict(torch.load(model_filename))
 
     # Test the model
     model.eval()
     with torch.no_grad():
         trainer.train_validate_epoch(loaders["test"], None, "test")
-
-    exit()
-    # Predict next word
-    texts = [
-        "The quick brown fox has",
-        "I can't wait to go to",
-        "The capital of France is",
-        "The best way to learn is to",
-    ]
-    n_next_words = 5
-
-    # Tokenize the texts
-    for text in texts:
-        tokens = lc.tokenizer(
-            text, padding="max_length", max_length=cfg.max_length, return_tensors="pt"
-        )
-        inputs = tokens["input_ids"].to(device)
-
-        predictions = []
-        for i in range(n_next_words):
-            output = model(inputs)
-            next_token = torch.argmax(output[:, -1, :])
-            next_word_prediction = str(lc.tokenizer.decode(next_token))
-            predictions.append(next_word_prediction)
-            inputs = torch.cat([inputs[:, 1:], next_token.reshape(1, -1)], dim=1)
-
-        print(f"Prediction: {text} {' '.join(predictions)}")

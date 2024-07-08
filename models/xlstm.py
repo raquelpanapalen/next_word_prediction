@@ -41,4 +41,5 @@ class xLSTM(nn.Module):
         self.model = xLSTMLMModel(config=self.config)
 
     def forward(self, x):
-        return self.model(x)
+        out = self.model(x)
+        return out[:, -1, :]

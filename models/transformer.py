@@ -83,4 +83,5 @@ class Transformer(nn.Module):
         x = self.decoder(x, memory=x, tgt_mask=input_mask, memory_mask=input_mask)
         x = self.dropout(x)
         out = self.linear(x)
+        out = out[:, -1, :]
         return out

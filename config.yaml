@@ -1,9 +1,9 @@
 model: 'xlstm'
-batch_size: 32
+batch-size: 32
 embed-dim: 512
 epochs: 40
-lr: 1e-5
+lr: 1e-4
 max_length: 20
-min_words: 100
+min-text-length: 100
 wandb: True
 chained-scheduler: True

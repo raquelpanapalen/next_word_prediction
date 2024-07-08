@@ -1,3 +1,7 @@
+from pathlib import Path
+import pandas as pd
+from sklearn.model_selection import train_test_split
+
 import torch
 from transformers import BertTokenizer
 from torch.utils.data import Dataset, DataLoader
@@ -7,10 +11,58 @@ from torchtext.vocab import build_vocab_from_iterator
 from torchtext.data.utils import get_tokenizer
 
 
+def create_rocstories_dataset(path):
+    data_path = Path(path) / "data" / "rocstories.csv"
+    df = pd.read_csv(data_path)
+    df["text"] = (
+        df["sentence1"]
+        + " "
+        + df["sentence2"]
+        + " "
+        + df["sentence3"]
+        + " "
+        + df["sentence4"]
+        + " "
+        + df["sentence5"]
+    )
+    train_data, temp_data = train_test_split(df["text"], test_size=0.3, random_state=42)
+    test_data, val_data = train_test_split(temp_data, test_size=0.5, random_state=42)
+
+    # Convert the splits to the desired dictionary format
+    train_list = [{"text": value} for value in train_data]
+    val_list = [{"text": value} for value in val_data]
+    test_list = [{"text": value} for value in test_data]
+
+    # Combine into a single dictionary
+    data_splits = {"train": train_list, "validation": val_list, "test": test_list}
+    return data_splits
+
+
+def create_alicewonderland_dataset(path):
+    data_path = Path(path) / "data" / "alice_in_wonderland.txt"
+    with open(data_path, "r") as file:
+        text = file.read()
+    text = text.split("\n")
+    text = [line for line in text if len(line) > 0]
+
+    # Split the text into training, validation and test sets
+    train_data, temp_data = train_test_split(text, test_size=0.3, random_state=42)
+    test_data, val_data = train_test_split(temp_data, test_size=0.5, random_state=42)
+
+    # Convert the splits to the desired dictionary format
+    train_list = [{"text": value} for value in train_data]
+    val_list = [{"text": value} for value in val_data]
+    test_list = [{"text": value} for value in test_data]
+
+    # Combine into a single dictionary
+    data_splits = {"train": train_list, "validation": val_list, "test": test_list}
+    return data_splits
+
+
 class TextDataset(Dataset):
     def __init__(self, encodings, labels_sequence):
         self.encodings = encodings
-        self.input_size = len(encodings["input_ids"][0]) - 1
+        self.input_size = len(encodings["input_ids"][0])
         self.labels_sequence = labels_sequence
 
     def __len__(self):
@@ -27,22 +79,23 @@ class TextDataset(Dataset):
 
 
 class TorchtextTokenizer:
-    def __init__(self):
+    def __init__(self, max_length, special_tokens_in_target):
         self.tokenizer = get_tokenizer("basic_english")
         self.vocab_size = None
         self.output_size = None
+        self.max_length = max_length
+        self.special_tokens_in_target = special_tokens_in_target
 
     def create_tokens(self, dataset):
         def clean_text(text):
-            return re.sub(r"[^a-zA-Z,. ]", "", text).strip()
+            cleaned_text = "".join([c if c.isalpha() else " " for c in text])
+            cleaned_text = re.sub(r"\b[b-hj-z]\b", "", cleaned_text)
+            return cleaned_text.strip()
 
         tokenised_samples = []
         for sample in dataset:
             clean_sample = clean_text(sample["text"])
             tokenised_samples.append(self.tokenizer(clean_sample))
-
-        # Tokenize the dataset
-        # tokenised_samples = list(map(self.tokenizer, dataset))
 
         return tokenised_samples
 
@@ -54,10 +107,33 @@ class TorchtextTokenizer:
             special_first=True,
         )
         self.vocab_size = len(self.train_vocab)
-        self.target_vocab = build_vocab_from_iterator(tokenised_samples, min_freq=3)
-        self.output_size = len(self.target_vocab)
+        if self.special_tokens_in_target:
+            self.target_vocab = self.train_vocab
+            self.output_size = self.vocab_size
+        else:
+            self.target_vocab = build_vocab_from_iterator(tokenised_samples, min_freq=3)
+            self.output_size = len(self.target_vocab)
 
         return self.vocab_size, self.output_size
+
+    def pad_sequences(self, tokenised_samples):
+        # Pad the sequences to the max_length
+        for i, sample in enumerate(tokenised_samples):
+            if len(sample) < self.max_length:
+                tokenised_samples[i] = ["<pad>"] * (
+                    self.max_length - len(sample)
+                ) + sample
+        return tokenised_samples
+
+    def create_subsequences(self, tokenised_samples, stride=20):
+        # Create subsequences with a fixed length and sliding window
+        sequences = []
+        for sample in tokenised_samples:
+            current = 0
+            while current + self.max_length <= len(sample):
+                sequences.append(sample[current : current + self.max_length])
+                current += stride
+        return sequences
 
     def tokenize(self, tokenised_samples):
         # Convert the sequences to index tensors
@@ -88,8 +164,20 @@ class TorchtextTokenizer:
 
         return encodings
 
-    def decode(self, tokens):
-        return " ".join([self.target_vocab.itos[token] for token in tokens])
+    def encode(self, samples):
+        stoi = self.train_vocab.get_stoi()
+        samples = [
+            [stoi[token] if token in stoi else stoi["<oov>"] for token in sample]
+            for sample in samples
+        ]
+        return torch.tensor(samples)
+
+    def decode(self, tokens, target=True):
+        if target:
+            token_dict = self.target_vocab.get_itos()
+        else:
+            token_dict = self.train_vocab.get_itos()
+        return " ".join([token_dict[token] for token in tokens])
 
 
 class LoaderConstructor:
@@ -98,20 +186,21 @@ class LoaderConstructor:
         dataset,
         batch_size,
         max_length,
-        min_words,
         tokenizer_type,
         labels_sequence=False,
     ):
         self.dataset = dataset
         self.batch_size = batch_size
         self.max_length = max_length + 1  # Add 1 for the labels
-        self.min_words = min_words
         self.tokenizer_type = tokenizer_type
         self.labels_sequence = labels_sequence
 
         # Load the tokenizer
         if tokenizer_type == "torchtext":
-            self.tokenizer = TorchtextTokenizer()
+            self.tokenizer = TorchtextTokenizer(
+                max_length=self.max_length,
+                special_tokens_in_target=self.labels_sequence,
+            )
         elif tokenizer_type == "bert":
             self.tokenizer = BertTokenizer.from_pretrained(
                 "google-bert/bert-large-uncased", padding_side="left"
@@ -146,20 +235,10 @@ class LoaderConstructor:
             )
 
         # Pad the sequences to the max_length
-        for i, sample in enumerate(tokenised_samples):
-            if len(sample) < self.max_length:
-                tokenised_samples[i] = ["<pad>"] * (
-                    self.max_length - len(sample)
-                ) + sample
+        tokenised_samples = self.tokenizer.pad_sequences(tokenised_samples)
 
         # Create subsequences with a fixed length and sliding window
-        stride = 30
-        sequences = []
-        for sample in tokenised_samples:
-            current = 0
-            while current + self.max_length < len(sample):
-                sequences.append(sample[current : current + self.max_length])
-                current += stride
+        sequences = self.tokenizer.create_subsequences(tokenised_samples)
 
         # Tokenize the dataset
         encodings = self.tokenizer.tokenize(sequences)
