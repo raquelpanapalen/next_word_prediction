@@ -50,7 +50,6 @@ def get_args():
     parser.add_argument("--min-text-length", type=int, default=200)
     parser.add_argument("--wandb", type=str2bool, default=False)
     parser.add_argument("--chained-scheduler", type=str2bool, default=False)
-    parser.add_argument("--tokenizer", type=str, default="torchtext")
     return parser.parse_args()
 
 
@@ -92,6 +91,7 @@ if __name__ == "__main__":
     if "wikitext" in cfg.dataset:
         dataset = load_dataset("wikitext", f"{cfg.dataset}-raw-v1")
         for split in dataset.keys():
+            # Filter out short texts because they are very noisy
             dataset[split] = dataset[split].filter(
                 lambda x: len(x["text"]) > cfg.min_text_length
             )
@@ -107,7 +107,6 @@ if __name__ == "__main__":
         dataset=dataset,
         batch_size=cfg.batch_size,
         max_length=cfg.max_length,
-        tokenizer_type=cfg.tokenizer,
         labels_sequence=labels_sequence,
     )
     loaders = {}

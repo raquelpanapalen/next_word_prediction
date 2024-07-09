@@ -3,7 +3,6 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 import torch
-from transformers import BertTokenizer
 from torch.utils.data import Dataset, DataLoader
 
 import re
@@ -177,7 +176,7 @@ class TorchtextTokenizer:
             token_dict = self.target_vocab.get_itos()
         else:
             token_dict = self.train_vocab.get_itos()
-        return " ".join([token_dict[token] for token in tokens])
+        return [token_dict[token] for token in tokens]
 
 
 class LoaderConstructor:
@@ -186,35 +185,20 @@ class LoaderConstructor:
         dataset,
         batch_size,
         max_length,
-        tokenizer_type,
         labels_sequence=False,
     ):
         self.dataset = dataset
         self.batch_size = batch_size
         self.max_length = max_length + 1  # Add 1 for the labels
-        self.tokenizer_type = tokenizer_type
         self.labels_sequence = labels_sequence
 
-        # Load the tokenizer
-        if tokenizer_type == "torchtext":
-            self.tokenizer = TorchtextTokenizer(
-                max_length=self.max_length,
-                special_tokens_in_target=self.labels_sequence,
-            )
-        elif tokenizer_type == "bert":
-            self.tokenizer = BertTokenizer.from_pretrained(
-                "google-bert/bert-large-uncased", padding_side="left"
-            )
-            self.vocab_size = self.tokenizer.vocab_size
-            self.output_size = self.vocab_size
-        else:
-            raise ValueError(f"Tokenizer {tokenizer_type} not found")
+        self.tokenizer = TorchtextTokenizer(
+            max_length=self.max_length,
+            special_tokens_in_target=self.labels_sequence,
+        )
 
     def construct_loader(self, split):
-        if self.tokenizer_type == "torchtext":
-            encodings = self.torchtext_tokenize(split)
-        elif self.tokenizer_type == "bert":
-            encodings = self.bert_tokenize(split)
+        encodings = self.torchtext_tokenize(split)
 
         dataset = TextDataset(
             encodings=encodings,
@@ -243,30 +227,3 @@ class LoaderConstructor:
         # Tokenize the dataset
         encodings = self.tokenizer.tokenize(sequences)
         return encodings
-
-    # We won't be using this function
-    def bert_tokenize(self, split):
-
-        def remove_non_alpha(text):
-            return "".join([c if c.isalpha() else " " for c in text])
-
-        # Tokenize the dataset
-        dataset = [
-            remove_non_alpha(sample["text"])
-            for sample in self.dataset[split]
-            if len(sample["text"]) > self.min_words
-        ]
-        encodings = self.tokenizer(
-            dataset,
-            truncation=True,
-            padding="max_length",
-            max_length=self.max_length,
-            add_special_tokens=False,
-            return_tensors="pt",
-        )
-        output = {
-            "input_ids": encodings["input_ids"][:, :-1],
-            "labels": encodings["input_ids"][:, 1:],  # Shift the labels
-        }
-
-        return output
