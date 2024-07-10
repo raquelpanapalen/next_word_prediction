@@ -170,6 +170,9 @@ if __name__ == "__main__":
     # Train the model
     model_filename = f"trained_models/{cfg.model}_{cfg.dataset}_lr={str(cfg.lr).replace('.', '_')}_best.pt"
 
+    # Create the directory if it doesn't exist
+    Path("trained_models").mkdir(parents=True, exist_ok=True)
+
     best_valid_loss = float("inf")
     for epoch in range(cfg.epochs):
         if cfg.wandb:
