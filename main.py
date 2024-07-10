@@ -102,12 +102,12 @@ if __name__ == "__main__":
         dataset = create_alicewonderland_dataset(os.getcwd())
 
     # Construct the dataloaders
-    labels_sequence = False
     lc = LoaderConstructor(
         dataset=dataset,
         batch_size=cfg.batch_size,
         max_length=cfg.max_length,
-        labels_sequence=labels_sequence,
+        labels_sequence=False,
+        min_freq=1 if cfg.dataset == "alicewonderland" else 3,
     )
     loaders = {}
     for loader in ["train", "validation", "test"]:

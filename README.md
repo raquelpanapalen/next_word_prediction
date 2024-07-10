@@ -51,6 +51,7 @@ Finally, run the `run.sh` bash script to start the training process:
 bash run.sh
 ```
 
-
+### 6. Qualitative results analysis
+Once the training phase is completed, to evaluate the predictions qualitatively, we include the Jupyter notebook `text_generation.ipynb` where the trained models generate next-word predictions for given input sequences. You can use this notebook to analyze the qualitative results.
 
 This `README.md` provides clear and concise instructions for setting up and running the text generation project, making it easy for users to get started and track their training progress.

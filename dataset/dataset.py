@@ -42,7 +42,9 @@ def create_alicewonderland_dataset(path):
     with open(data_path, "r") as file:
         text = file.read()
     text = text.split("\n")
-    text = [line for line in text if len(line) > 0]
+
+    # Remove lines with less than 10 words (arbitrary threshold) because they are not useful
+    text = [line.strip() for line in text if len(line.strip().split()) > 10]
 
     # Split the text into training, validation and test sets
     train_data, temp_data = train_test_split(text, test_size=0.3, random_state=42)
@@ -98,10 +100,10 @@ class TorchtextTokenizer:
 
         return tokenised_samples
 
-    def create_vocab(self, tokenised_samples):
+    def create_vocab(self, tokenised_samples, min_freq):
         self.train_vocab = build_vocab_from_iterator(
             tokenised_samples,
-            min_freq=3,
+            min_freq=min_freq,
             specials=["<pad>", "<oov>"],
             special_first=True,
         )
@@ -110,7 +112,9 @@ class TorchtextTokenizer:
             self.target_vocab = self.train_vocab
             self.output_size = self.vocab_size
         else:
-            self.target_vocab = build_vocab_from_iterator(tokenised_samples, min_freq=3)
+            self.target_vocab = build_vocab_from_iterator(
+                tokenised_samples, min_freq=min_freq
+            )
             self.output_size = len(self.target_vocab)
 
         return self.vocab_size, self.output_size
@@ -185,11 +189,13 @@ class LoaderConstructor:
         dataset,
         batch_size,
         max_length,
+        min_freq=3,
         labels_sequence=False,
     ):
         self.dataset = dataset
         self.batch_size = batch_size
         self.max_length = max_length + 1  # Add 1 for the labels
+        self.min_freq = min_freq
         self.labels_sequence = labels_sequence
 
         self.tokenizer = TorchtextTokenizer(
@@ -215,7 +221,7 @@ class LoaderConstructor:
         # Build the vocabulary
         if split == "train":
             self.vocab_size, self.output_size = self.tokenizer.create_vocab(
-                tokenised_samples
+                tokenised_samples, self.min_freq
             )
 
         # Pad the sequences to the max_length
